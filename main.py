@@ -1,4 +1,4 @@
-import streamilt as st
+import streamlit as st
 st.title('나의 첫 웹 서비스 만들기!')
 a=st.text_input('이름을 입력해주세요')
 st.selectbox('좋아하는 음식을 선택하세요!',['라따뚜이','오페라케이크','알리오올리오'])
