@@ -1,104 +1,114 @@
-import streamlit as st
+# streamlit_app.py
+import os
+import io
+from datetime import datetime
+from typing import Optional
+
 import pandas as pd
-import plotly.express as px
+import streamlit as st
+from sqlalchemy import create_engine, Column, Integer, String, Text, Date, DateTime
+from sqlalchemy.orm import sessionmaker, declarative_base
+from sqlalchemy.exc import IntegrityError
+from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode, DataReturnMode
+from dotenv import load_dotenv
 
-st.set_page_config(page_title="사업체조사 데이터 분석", layout="wide")
+# load .env
+load_dotenv()
 
-st.title("📊 공공데이터포털 사업체조사 대시보드")
+# ---------------------------
+# 설정 및 DB 연결
+# ---------------------------
+DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///recipes.db")
+ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "changeme")
 
-# -------------------------
-# 데이터 로드
-# -------------------------
-@st.cache_data
-def load_data():
-    df = pd.read_excel("you.xlsx")
-    return df
+engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {})
+SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+Base = declarative_base()
 
-df = load_data()
+# ---------------------------
+# DB 모델
+# ---------------------------
+class Recipe(Base):
+    __tablename__ = "recipes"
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(255), nullable=False)
+    main_ingredients = Column(Text, nullable=False)
+    sub_ingredients = Column(Text, nullable=True)
+    method = Column(Text, nullable=False)
+    description = Column(Text, nullable=True)
+    source_date = Column(Date, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
-st.success("데이터 로드 완료!")    
+Base.metadata.create_all(bind=engine)
 
-# ----------------------------------
-# 사이드바 필터
-# ----------------------------------
-st.sidebar.header("🔍 필터")
 
-selected_region = st.sidebar.selectbox(
-    "행정구역 선택",
-    options=df["행정구역"].unique()
-)
+# ---------------------------
+# DB 유틸리티
+# ---------------------------
+def get_session():
+    return SessionLocal()
 
-selected_category = st.sidebar.selectbox(
-    "산업분류명 선택",
-    options=df["산업분류명"].unique()
-)
+def add_recipe(session, **kwargs):
+    r = Recipe(**kwargs)
+    session.add(r)
+    session.commit()
+    session.refresh(r)
+    return r
 
-filtered = df[(df["행정구역"] == selected_region) &
-              (df["산업분류명"] == selected_category)]
+def update_recipe(session, recipe_id, **kwargs):
+    r = session.query(Recipe).filter(Recipe.id == recipe_id).first()
+    if not r:
+        return None
+    for k, v in kwargs.items():
+        setattr(r, k, v)
+    r.updated_at = datetime.utcnow()
+    session.commit()
+    session.refresh(r)
+    return r
 
-# ----------------------------------
-# KPI 카드
-# ----------------------------------
-col1, col2, col3, col4 = st.columns(4)
+def delete_recipe(session, recipe_id):
+    r = session.query(Recipe).filter(Recipe.id == recipe_id).first()
+    if not r:
+        return False
+    session.delete(r)
+    session.commit()
+    return True
 
-col1.metric("총 사업체수", int(filtered["총사업체수"].sum()))
-col2.metric("총 종사자수", int(filtered["총종사자수"].sum()))
-col3.metric("남자 종사자수", int(filtered["남자종사자수"].sum()))
-col4.metric("여자 종사자수", int(filtered["여자종사자수"].sum()))
+def query_recipes(session, search=None, main_filter=None):
+    q = session.query(Recipe)
+    if search:
+        like = f"%{search}%"
+        q = q.filter((Recipe.name.ilike(like)) | (Recipe.main_ingredients.ilike(like)) | (Recipe.method.ilike(like)))
+    if main_filter:
+        like = f"%{main_filter}%"
+        q = q.filter(Recipe.main_ingredients.ilike(like))
+    return q.order_by(Recipe.id.desc()).all()
 
-st.divider()
+def df_from_recipes(recipes):
+    rows = []
+    for r in recipes:
+        rows.append({
+            "id": r.id,
+            "요리명": r.name,
+            "주재료": r.main_ingredients,
+            "부재료": r.sub_ingredients,
+            "조리법": r.method,
+            "상세설명": r.description,
+            "데이터기준일자": r.source_date.isoformat() if r.source_date else None,
+            "created_at": r.created_at,
+            "updated_at": r.updated_at
+        })
+    return pd.DataFrame(rows)
 
-# ----------------------------------
-# 산업분류명별 사업체수 비교 (막대그래프)
-# ----------------------------------
-st.subheader("📌 산업분류명별 총사업체수 비교")
+# ---------------------------
+# Streamlit UI
+# ---------------------------
+st.set_page_config(page_title="보성군 차·디저트 DB", layout="wide", initial_sidebar_state="expanded")
 
-grouped = df.groupby("산업분류명")["총사업체수"].sum().reset_index()
-
-fig1 = px.bar(
-    grouped,
-    x="산업분류명",
-    y="총사업체수",
-    title="전체 산업분류 대비 사업체수",
-)
-
-st.plotly_chart(fig1, use_container_width=True)
-
-st.divider()
-
-# ----------------------------------
-# 행정구역별 종사자수 비교
-# ----------------------------------
-st.subheader("📌 행정구역별 총종사자수")
-
-grouped2 = df.groupby("행정구역")["총종사자수"].sum().reset_index()
-
-fig2 = px.bar(
-    grouped2,
-    x="행정구역",
-    y="총종사자수",
-    title="행정구역별 총종사자수",
-)
-
-st.plotly_chart(fig2, use_container_width=True)
-
-# ----------------------------------
-# 대표자 나이대 분석
-# ----------------------------------
-st.subheader("📌 대표자 연령대별 사업체수")
-
-age_cols = [
-    "대표자사업체수20세미만",
-    "대표자사업체수20_29세",
-    "대표자사업체수30_39세",
-    "대표자사업체수40_49세",
-    "대표자사업체수50_59세",
-    "대표자사업체수60세이상",
-]
-
-age_df = df[age_cols].sum().reset_index()
-age_df.columns = ["연령대", "사업체수"]
-
-fig3 = px.bar(age_df, x="연령대", y="사업체수", title="대표자 연령대별 사업체수")
-
-st.plotly_chart(fig3, use_container_width=True)
+# 페이지 헤더 (컬러풀)
+st.markdown(
+    """
+    <div style="display:flex;align-items:center;gap:16px">
+      <div style="width:56px;height:56px;border-radius:12px;background:linear-gradient(135deg,#7BD389,#2DBA6A);display:flex;align-items:center;justify-content:center;color:white;font-weight:bold;font-size:22px">茶</div>
+      <
