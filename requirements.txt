@@ -1,7 +1,5 @@
-streamlit>=1.26.0
-pandas>=1.5.0
-sqlalchemy>=1.4
-st_aggrid>=0.4.0
-alembic>=1.10.0    # 선택 (마이그레이션 원하면)
-python-dotenv>=1.0.0
-psycopg2-binary>=2.9.0  # PostgreSQL 사용 시
+streamlit==1.39.0
+pandas==2.2.2
+streamlit-aggrid==1.0.5
+plotly==5.24.1
+numpy==1.26.4
